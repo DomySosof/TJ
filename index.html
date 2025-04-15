@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tarjeta de Crédito con Historial</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        #historial-lista li {
+            background-color: #4a5568;
+            margin-bottom: 4px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.875rem;
+            display: flex;
+            justify-content: space-between;
+        }
+        .gasto { color: #f56565; }
+        .pago { color: #48bb78; }
+        .fecha { color: #a0aec0; font-size: 0.75rem;}
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen bg-gray-900 py-8">
+    <div class="bg-gray-800 text-white p-6 rounded-2xl shadow-lg w-96">
+        <h2 class="text-xl font-bold">Tarjeta de Crédito</h2>
+        <p class="mt-2">Saldo disponible: <span id="saldo" class="font-bold text-green-400">$4800.00</span></p>
+        <p>Fecha de pago: <span class="font-bold">5 de cada mes</span></p>
+        <p>Fecha de corte: <span class="font-bold">11 de cada mes</span></p>
+
+        <div class="mt-4">
+            <label class="block text-sm">Nuevo Gasto (Q):</label>
+            <input type="number" id="gasto" class="w-full p-2 mt-1 rounded bg-gray-700 text-white border-none" placeholder="Monto del gasto"/>
+            <button onclick="registrarGasto()" class="w-full mt-3 bg-blue-500 p-2 rounded hover:bg-blue-600">Registrar Gasto</button>
+        </div>
+
+        <div class="mt-6">
+            <label class="block text-sm">Pago (Q):</label>
+            <input type="number" id="pago" class="w-full p-2 mt-1 rounded bg-gray-700 text-white border-none" placeholder="Monto del pago"/>
+            <button onclick="registrarPago()" class="w-full mt-3 bg-green-500 p-2 rounded hover:bg-green-600">Registrar Pago</button>
+        </div>
+
+        <div class="mt-6">
+            <p class="font-bold">Pago mínimo (para evitar intereses): Q<span id="pago-minimo">0.00</span></p>
+            <p class="font-bold">Total a pagar el 5 mayo: <span id="total-deuda">0.00</span></p>
+            <p class="font-bold">Deuda a pagar el 5 de <span id="proximo-pago-mes">[mes]</span>: Q<span id="deuda-proximo-pago">0.00</span></p>
+        </div>
+
+        <div class="mt-6 flex space-x-2">
+            <button onclick="triggerLoadDialog()" class="flex-1 bg-yellow-500 p-2 rounded hover:bg-yellow-600 text-sm">Cargar Historial (CSV)</button>
+            <button onclick="saveDataToCsv()" class="flex-1 bg-purple-500 p-2 rounded hover:bg-purple-600 text-sm">Descargar Historial (CSV)</button>
+        </div>
+        <input type="file" id="loadCsvInput" accept=".csv" style="display: none;" onchange="handleFileLoad(event)">
+
+        <div id="historial" class="mt-6">
+            <h3 class="text-lg font-semibold mb-2">Historial de Transacciones</h3>
+            <ul id="historial-lista" class="max-h-48 overflow-y-auto pr-2">
+                <li class="text-gray-500">No hay transacciones registradas.</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let transactions = [];
+        const LIMITE_CREDITO = 4800;
+        const porcentajePagoMinimo = 0.1;
+        let transaccionesModificadas = false;
+
+        async function cargarTransaccionesIniciales() {
+            try {
+                const response = await fetch('http://localhost:3000/transacciones');
+                if (!response.ok) {
+                    throw new Error('Error al cargar el historial.');
+                }
+                transactions = await response.json();
+                transactions = transactions.map(tx => ({
+                    type: tx.type,
+                    amount: tx.amount,
+                    date: new Date(tx.date)
+                }));
+                console.log('Transacciones cargadas:', transactions);
+                actualizarInterfaz();
+            } catch (error) {
+                console.error('Error al cargar:', error);
+                alert('No se pudo cargar el historial inicial. Continúa con un historial vacío.');
+            }
+        }
+
+        async function guardarTransaccion(tx) {
+            try {
+                const response = await fetch('http://localhost:3000/transacciones', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        type: tx.type,
+                        amount: tx.amount,
+                        date: tx.date.toISOString()
+                    })
+                });
+                if (!response.ok) {
+                    throw new Error('Error al guardar la transacción.');
+                }
+                transactions.push(tx);
+                transaccionesModificadas = true;
+                console.log('Transacción guardada:', tx);
+            } catch (error) {
+                console.error('Error al guardar:', error);
+                alert('Error al guardar la transacción. Por favor, descarga el historial manualmente.');
+            }
+        }
+
+        function calcularDeudaProximoPago() {
+            const hoy = new Date();
+            const anioActual = hoy.getFullYear();
+            const mesActual = hoy.getMonth();
+
+            let mesPago = mesActual + 1;
+            let anioPago = anioActual;
+            if (hoy.getDate() > 5) {
+                mesPago += 1;
+            }
+            if (mesPago > 11) {
+                mesPago = 0;
+                anioPago += 1;
+            }
+
+            let inicioCorte = new Date(anioPago, mesPago - 1, 12);
+            let finCorte = new Date(anioPago, mesPago, 4, 23, 59, 59, 999);
+            if (mesPago === 0) {
+                inicioCorte = new Date(anioPago - 1, 11, 12);
+                finCorte = new Date(anioPago, 0, 4, 23, 59, 59, 999);
+            }
+
+            let deudaPeriodo = 0;
+            transactions.forEach(tx => {
+                const fechaTx = new Date(tx.date);
+                if (fechaTx >= inicioCorte && fechaTx <= finCorte) {
+                    if (tx.type === 'gasto') {
+                        deudaPeriodo += tx.amount;
+                    } else if (tx.type === 'pago') {
+                        deudaPeriodo -= tx.amount;
+                    }
+                }
+            });
+            deudaPeriodo = Math.max(0, deudaPeriodo);
+
+            const meses = [
+                'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+                'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+            ];
+            const mesFormateado = meses[mesPago];
+
+            return {
+                deuda: deudaPeriodo,
+                mes: mesFormateado,
+                fechaPago: new Date(anioPago, mesPago, 5)
+            };
+        }
+
+        function calcularEstadoActual() {
+            let deudaCalculada = 0;
+            for (const transaccion of transactions) {
+                if (transaccion.type === 'gasto') {
+                    deudaCalculada += transaccion.amount;
+                } else if (transaccion.type === 'pago') {
+                    deudaCalculada -= transaccion.amount;
+                }
+            }
+            deudaCalculada = Math.max(0, deudaCalculada);
+            let saldoCalculado = LIMITE_CREDITO - deudaCalculada;
+            saldoCalculado = Math.max(0, saldoCalculado);
+            return { totalDeuda: deudaCalculada, saldoDisponible: saldoCalculado };
+        }
+
+        async function registrarGasto() {
+            const gastoInput = document.getElementById('gasto');
+            const monto = parseFloat(gastoInput.value);
+            const estadoActual = calcularEstadoActual();
+
+            if (isNaN(monto) || monto <= 0) {
+                alert('Ingrese un monto válido para el gasto.');
+                return;
+            }
+
+            if (monto > estadoActual.saldoDisponible) {
+                alert('No puedes gastar más que tu saldo disponible ($' + estadoActual.saldoDisponible.toFixed(2) + ').');
+                return;
+            }
+
+            const nuevaTransaccion = {
+                type: 'gasto',
+                amount: monto,
+                date: new Date()
+            };
+            await guardarTransaccion(nuevaTransaccion);
+            actualizarInterfaz();
+            gastoInput.value = '';
+        }
+
+        async function registrarPago() {
+            const pagoInput = document.getElementById('pago');
+            const monto = parseFloat(pagoInput.value);
+            const estadoActual = calcularEstadoActual();
+
+            if (isNaN(monto) || monto <= 0) {
+                alert('Ingrese un monto válido para el pago.');
+                return;
+            }
+
+            if (monto > estadoActual.totalDeuda) {
+                alert('El pago no puede ser mayor que la deuda total ($' + estadoActual.totalDeuda.toFixed(2) + ').');
+                return;
+            }
+
+            const nuevaTransaccion = {
+                type: 'pago',
+                amount: monto,
+                date: new Date()
+            };
+            await guardarTransaccion(nuevaTransaccion);
+            actualizarInterfaz();
+            pagoInput.value = '';
+        }
+
+        function formatearFecha(fecha) {
+            const dia = String(fecha.getDate()).padStart(2, '0');
+            const mes = String(fecha.getMonth() + 1).padStart(2, '0');
+            const anio = fecha.getFullYear();
+            const hora = String(fecha.getHours()).padStart(2, '0');
+            const minuto = String(fecha.getMinutes()).padStart(2, '0');
+            return `${dia}/${mes}/${anio} ${hora}:${minuto}`;
+        }
+
+        function actualizarInterfaz() {
+            const estadoActual = calcularEstadoActual();
+            document.getElementById('saldo').textContent = `$${estadoActual.saldoDisponible.toFixed(2)}`;
+            document.getElementById('total-deuda').textContent = `$${estadoActual.totalDeuda.toFixed(2)}`;
+            let pagoMinimo = estadoActual.totalDeuda * porcentajePagoMinimo;
+            pagoMinimo = Math.max(0, pagoMinimo);
+            document.getElementById('pago-minimo').textContent = pagoMinimo.toFixed(2);
+
+            const proximoPago = calcularDeudaProximoPago();
+            document.getElementById('deuda-proximo-pago').textContent = proximoPago.deuda.toFixed(2);
+            document.getElementById('proximo-pago-mes').textContent = proximoPago.mes;
+
+            const listaHistorial = document.getElementById('historial-lista');
+            listaHistorial.innerHTML = '';
+
+            if (transactions.length === 0) {
+                listaHistorial.innerHTML = '<li class="text-gray-500">No hay transacciones registradas.</li>';
+            } else {
+                const transaccionesOrdenadas = [...transactions].reverse();
+                transaccionesOrdenadas.forEach(tx => {
+                    const item = document.createElement('li');
+                    const signo = tx.type === 'gasto' ? '-' : '+';
+                    const claseColor = tx.type === 'gasto' ? 'gasto' : 'pago';
+                    item.innerHTML = `
+                        <span class="${claseColor}">${signo}$${tx.amount.toFixed(2)} (${tx.type})</span>
+                        <span class="fecha">${formatearFecha(tx.date)}</span>
+                    `;
+                    listaHistorial.appendChild(item);
+                });
+            }
+        }
+
+        function triggerLoadDialog() {
+            document.getElementById('loadCsvInput').click();
+        }
+
+        async function handleFileLoad(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (!file.name.toLowerCase().endsWith('.csv') && file.type !== "text/csv") {
+                alert("Por favor, selecciona un archivo con extensión .csv");
+                event.target.value = null;
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                const text = e.target.result;
+                const nuevasTransacciones = [];
+                try {
+                    const lines = text.trim().split('\n');
+                    if (lines.length === 0 && text.trim() === '') {
+                        console.log("Archivo CSV vacío, reiniciando historial.");
+                    } else {
+                        for (const [index, line] of lines.entries()) {
+                            if (!line.trim()) continue;
+
+                            const parts = line.split(',');
+                            if (parts.length !== 3) {
+                                throw new Error(`Error en línea ${index + 1}: Se esperaban 3 columnas.`);
+                            }
+
+                            const type = parts[0].trim();
+                            const amount = parseFloat(parts[1].trim());
+                            const dateISO = parts[2].trim();
+                            const date = new Date(dateISO);
+
+                            if (type !== 'gasto' && type !== 'pago') {
+                                throw new Error(`Error en línea ${index + 1}: Tipo inválido "${type}".`);
+                            }
+                            if (isNaN(amount) || amount <= 0) {
+                                throw new Error(`Error en línea ${index + 1}: Monto inválido.`);
+                            }
+                            if (isNaN(date.getTime())) {
+                                throw new Error(`Error en línea ${index + 1}: Fecha inválida.`);
+                            }
+
+                            const esDuplicado = transactions.some(tx =>
+                                tx.type === type &&
+                                Math.abs(tx.amount - amount) < 0.01 &&
+                                Math.abs(new Date(tx.date) - date) < 1000
+                            );
+
+                            if (!esDuplicado) {
+                                await fetch('http://localhost:3000/transacciones', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ type, amount, date: dateISO })
+                                }).then(res => {
+                                    if (!res.ok) throw new Error(`Error al guardar transacción en línea ${index + 1}.`);
+                                });
+                                nuevasTransacciones.push({ type, amount, date });
+                            }
+                        }
+                    }
+
+                    transactions.push(...nuevasTransacciones);
+                    transaccionesModificadas = true;
+                    console.log("Historial cargado desde CSV:", transactions);
+                    actualizarInterfaz();
+                    alert(`Historial cargado correctamente desde '${file.name}'.`);
+                } catch (error) {
+                    console.error("Error al procesar el archivo CSV:", error);
+                    alert("Error al leer el archivo CSV:\n" + error.message);
+                } finally {
+                    event.target.value = null;
+                }
+            };
+            reader.onerror = function() {
+                alert("No se pudo leer el archivo seleccionado.");
+                event.target.value = null;
+            };
+            reader.readAsText(file);
+        }
+
+        function saveDataToCsv() {
+            transaccionesModificadas = false;
+            window.location.href = 'http://localhost:3000/descargar-csv';
+        }
+
+        window.addEventListener('beforeunload', (event) => {
+            if (transaccionesModificadas) {
+                event.preventDefault();
+                event.returnValue = 'Tienes cambios sin descargar. ¿Seguro que quieres cerrar?';
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', cargarTransaccionesIniciales);
+    </script>
+</body>
+</html>
